@@ -1,0 +1,8 @@
+{
+  "name": "Trustline Investment Portal",
+  "description": "Comprehensive investment management platform for Trustline Capital Limited, featuring dedicated Client, Back Office, and Super Admin portals.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
