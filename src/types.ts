@@ -52,8 +52,27 @@ export interface ClientProfile {
   beneficiary_name?: string;
   beneficiary_relationship?: string;
   beneficiary_phone?: string;
+  avatar_url?: string;
+  wallet_balance_ngn?: number;
+  wallet_balance_usd?: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface WalletTransaction {
+  id: string;
+  client_id: string;
+  amount: number;
+  currency: 'NGN' | 'USD';
+  bank_name?: string;
+  account_number?: string;
+  reference_number?: string;
+  receipt_url?: string;
+  receipt_name?: string;
+  status: 'pending' | 'approved' | 'rejected';
+  client_acknowledged?: boolean;
+  created_at: string;
+  approved_at?: string;
 }
 
 export type ProductType = 'Mutual Fund' | 'Fixed Income' | 'Treasury Bill' | 'Commercial Paper' | 'Discount Products';

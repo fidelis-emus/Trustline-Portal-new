@@ -26,7 +26,11 @@ import {
   LogOut,
   Building,
   CreditCard,
-  Printer
+  Printer,
+  Camera,
+  Wallet,
+  Coins,
+  Eye
 } from 'lucide-react';
 import {
   AreaChart,
@@ -40,7 +44,7 @@ import {
   Bar
 } from 'recharts';
 import { TrustlineStore, generateUUID, generateInvestmentRef } from '../store';
-import { User, ClientProfile, KYCDocuments, Investment, InvestmentProduct, DailyInterestAccrual, WithdrawalRequest, InvestmentCertificate } from '../types';
+import { User, ClientProfile, KYCDocuments, Investment, InvestmentProduct, DailyInterestAccrual, WithdrawalRequest, InvestmentCertificate, WalletTransaction } from '../types';
 
 interface ClientPortalProps {
   currentDate: string;
@@ -110,6 +114,153 @@ export default function ClientPortal({ currentDate, onStateChange }: ClientPorta
   const [beneficiaryRelationship, setBeneficiaryRelationship] = useState('');
   const [beneficiaryPhone, setBeneficiaryPhone] = useState('');
 
+  // Wallet / Credit state
+  const [isCreditWalletModalOpen, setIsCreditWalletModalOpen] = useState(false);
+  const [creditAmount, setCreditAmount] = useState<number>(500000);
+  const [creditCurrency, setCreditCurrency] = useState<'NGN' | 'USD'>('NGN');
+  const [creditBankName, setCreditBankName] = useState('');
+  const [creditRef, setCreditRef] = useState('');
+  const [creditReceiptBase64, setCreditReceiptBase64] = useState('');
+  const [creditReceiptName, setCreditReceiptName] = useState('');
+  const [creditSuccess, setCreditSuccess] = useState('');
+  const [creditError, setCreditError] = useState('');
+  const [walletTransactions, setWalletTransactions] = useState<WalletTransaction[]>([]);
+
+  // Avatar Upload Helper
+  const handleAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !currentUser || !clientProfile) return;
+    
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const base64String = reader.result as string;
+      const dbState = TrustlineStore.loadState();
+      const updatedProfiles = dbState.clientProfiles.map(p => {
+        if (p.id === clientProfile.id) {
+          return {
+            ...p,
+            avatar_url: base64String,
+            updated_at: new Date().toISOString()
+          };
+        }
+        return p;
+      });
+      
+      TrustlineStore.saveState({
+        ...dbState,
+        clientProfiles: updatedProfiles
+      });
+      
+      // Update local state
+      setClientProfile(prev => prev ? { ...prev, avatar_url: base64String } : null);
+      
+      // Write audit log
+      TrustlineStore.addAuditLog(currentUser.id, currentUser.email, 'client', 'UPLOAD_AVATAR', 'client_profiles', clientProfile.id);
+      
+      onStateChange();
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Receipt Upload Helper
+  const handleReceiptUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCreditReceiptName(file.name);
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setCreditReceiptBase64(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Submit Credit Wallet Form
+  const handleCreditWalletSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser || !clientProfile) return;
+
+    if (!creditAmount || creditAmount <= 0) {
+      setCreditError('Please specify a valid amount.');
+      return;
+    }
+
+    if (!creditReceiptBase64) {
+      setCreditError('Please upload your transaction payment receipt proof.');
+      return;
+    }
+
+    const dbState = TrustlineStore.loadState();
+    const newTx: WalletTransaction = {
+      id: `tx-${generateUUID()}`,
+      client_id: clientProfile.id,
+      amount: creditAmount,
+      currency: creditCurrency,
+      bank_name: creditBankName || 'Direct Transfer',
+      reference_number: creditRef || `REF-${Math.floor(Math.random() * 900000) + 100000}`,
+      receipt_url: creditReceiptBase64,
+      receipt_name: creditReceiptName,
+      status: 'pending',
+      client_acknowledged: false,
+      created_at: new Date().toISOString()
+    };
+
+    const updatedTxs = [newTx, ...(dbState.walletTransactions || [])];
+    
+    TrustlineStore.saveState({
+      ...dbState,
+      walletTransactions: updatedTxs
+    });
+
+    // Write audit log
+    TrustlineStore.addAuditLog(
+      currentUser.id,
+      currentUser.email,
+      'client',
+      'SUBMIT_WALLET_DEPOSIT_PROOF',
+      'wallet_transactions',
+      newTx.id,
+      null,
+      { amount: creditAmount, currency: creditCurrency, ref: newTx.reference_number }
+    );
+
+    setCreditSuccess('Your deposit transaction receipt has been submitted for back-office validation!');
+    setCreditError('');
+    
+    // Clear states
+    setCreditAmount(500000);
+    setCreditBankName('');
+    setCreditRef('');
+    setCreditReceiptBase64('');
+    setCreditReceiptName('');
+
+    // Reload state
+    reloadData();
+    onStateChange();
+
+    setTimeout(() => {
+      setCreditSuccess('');
+      setIsCreditWalletModalOpen(false);
+    }, 4000);
+  };
+
+  // Acknowledge approved deposits
+  const handleAcknowledgeTx = (txId: string) => {
+    const dbState = TrustlineStore.loadState();
+    const txs = dbState.walletTransactions || [];
+    const updated = txs.map((tx: WalletTransaction) => {
+      if (tx.id === txId) {
+        return { ...tx, client_acknowledged: true };
+      }
+      return tx;
+    });
+    TrustlineStore.saveState({
+      ...dbState,
+      walletTransactions: updated
+    });
+    reloadData();
+    onStateChange();
+  };
+
   // Load state on mount
   useEffect(() => {
     // Attempt auto-login with default client for ease of testing
@@ -137,6 +288,9 @@ export default function ClientPortal({ currentDate, onStateChange }: ClientPorta
         const invIds = userInvs.map(i => i.id);
         const userAccruals = dbState.accruals.filter(a => invIds.includes(a.investment_id));
         setAccruals(userAccruals);
+
+        const txs = (dbState.walletTransactions || []).filter((t: WalletTransaction) => t.client_id === profile.id);
+        setWalletTransactions(txs);
       }
       setProducts(dbState.products.filter(p => p.is_active));
     }
@@ -291,6 +445,7 @@ export default function ClientPortal({ currentDate, onStateChange }: ClientPorta
           beneficiary_name: beneficiaryName,
           beneficiary_relationship: beneficiaryRelationship,
           beneficiary_phone: beneficiaryPhone,
+          kyc_status: 'pending' as const,
           kyc_documents: {
             ...p.kyc_documents,
             ...kycFiles
@@ -349,6 +504,15 @@ export default function ClientPortal({ currentDate, onStateChange }: ClientPorta
       return;
     }
 
+    // Verify wallet balance
+    const currency = prod.currency;
+    const walletBalance = currency === 'USD' ? (clientProfile.wallet_balance_usd || 0) : (clientProfile.wallet_balance_ngn || 0);
+    
+    if (walletBalance < bookingAmount) {
+      setBookingError(`Insufficient wallet balance. You need ${currency === 'USD' ? '$' : '₦'}${bookingAmount.toLocaleString()} to book this investment, but your current wallet balance is ${currency === 'USD' ? '$' : '₦'}${walletBalance.toLocaleString()}. Please credit your wallet first.`);
+      return;
+    }
+
     const dbState = TrustlineStore.loadState();
     const tenure = prod.tenure_days;
     const rate = prod.annual_rate;
@@ -400,8 +564,29 @@ export default function ClientPortal({ currentDate, onStateChange }: ClientPorta
       created_at: new Date().toISOString()
     };
 
+    // Deduct wallet balance
+    const updatedProfiles = dbState.clientProfiles.map(p => {
+      if (p.id === clientProfile.id) {
+        if (currency === 'USD') {
+          return {
+            ...p,
+            wallet_balance_usd: (p.wallet_balance_usd || 0) - bookingAmount,
+            updated_at: new Date().toISOString()
+          };
+        } else {
+          return {
+            ...p,
+            wallet_balance_ngn: (p.wallet_balance_ngn || 0) - bookingAmount,
+            updated_at: new Date().toISOString()
+          };
+        }
+      }
+      return p;
+    });
+
     TrustlineStore.saveState({
       ...dbState,
+      clientProfiles: updatedProfiles,
       investments: [newInvestment, ...dbState.investments],
       certificates: [newCert, ...dbState.certificates]
     });
@@ -788,43 +973,7 @@ export default function ClientPortal({ currentDate, onStateChange }: ClientPorta
                 </button>
               </div>
 
-              {/* Instant Developer Quick Sign-In */}
-              {!isRegisterMode && (
-                <div className="mt-8 bg-slate-50 rounded-lg p-3.5 border border-slate-200">
-                  <h4 className="text-xs font-semibold text-slate-700 mb-2">Simulated Testing Sign-In:</h4>
-                  <div className="space-y-2">
-                    <button
-                      onClick={() => {
-                        const db = TrustlineStore.loadState();
-                        const client1 = db.users.find(u => u.email === 'client@example.com');
-                        if (client1) handleLoginDirect(client1);
-                      }}
-                      className="w-full text-left text-xs bg-white hover:bg-blue-50 hover:border-blue-300 transition border border-slate-200 rounded px-3 py-2 flex items-center justify-between"
-                    >
-                      <div>
-                        <span className="font-semibold block text-slate-800">John Doe (Verified KYC)</span>
-                        <span className="text-[10px] text-slate-500">client@example.com / client123</span>
-                      </div>
-                      <ChevronRight className="w-4 h-4 text-slate-400" />
-                    </button>
 
-                    <button
-                      onClick={() => {
-                        const db = TrustlineStore.loadState();
-                        const client2 = db.users.find(u => u.email === 'jane.smith@example.com');
-                        if (client2) handleLoginDirect(client2);
-                      }}
-                      className="w-full text-left text-xs bg-white hover:bg-blue-50 hover:border-blue-300 transition border border-slate-200 rounded px-3 py-2 flex items-center justify-between"
-                    >
-                      <div>
-                        <span className="font-semibold block text-slate-800">Jane Smith (Unverified KYC)</span>
-                        <span className="text-[10px] text-slate-500">jane.smith@example.com / jane123</span>
-                      </div>
-                      <ChevronRight className="w-4 h-4 text-slate-400" />
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
           </div>
         ) : (
@@ -833,13 +982,86 @@ export default function ClientPortal({ currentDate, onStateChange }: ClientPorta
             {/* Sidebar Controls */}
             <div className="lg:col-span-1 bg-white rounded-xl border border-slate-200 shadow-xs p-4 h-fit">
               <div className="text-center pb-4 mb-4 border-b border-slate-200">
-                <div className="w-12 h-12 bg-blue-100 text-blue-700 font-bold text-lg rounded-full flex items-center justify-center mx-auto mb-2">
-                  {currentUser.first_name[0]}{currentUser.last_name[0]}
+                <div className="relative group w-16 h-16 mx-auto mb-3">
+                  {clientProfile?.avatar_url ? (
+                    <img
+                      src={clientProfile.avatar_url}
+                      alt="Avatar"
+                      className="w-16 h-16 rounded-full object-cover border-2 border-blue-500 shadow-sm"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <div className="w-16 h-16 bg-gradient-to-tr from-blue-500 to-indigo-600 text-white font-bold text-xl rounded-full flex items-center justify-center shadow-md select-none">
+                      {currentUser.first_name[0]}{currentUser.last_name[0]}
+                    </div>
+                  )}
+                  {/* File Upload Trigger */}
+                  <label className="absolute -bottom-1 -right-1 bg-blue-600 hover:bg-blue-700 text-white p-1.5 rounded-full shadow-md cursor-pointer border border-white transition flex items-center justify-center">
+                    <Camera className="w-3.5 h-3.5" />
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleAvatarUpload}
+                      className="hidden"
+                    />
+                  </label>
                 </div>
                 <h3 className="font-bold text-slate-900 truncate">
                   {currentUser.first_name} {currentUser.last_name}
                 </h3>
                 <p className="text-xs text-slate-500 font-mono truncate">{currentUser.email}</p>
+                <div className="mt-2">
+                  <span className={`inline-block text-[10px] font-bold uppercase px-2 py-0.5 rounded-full border ${
+                    clientProfile?.kyc_status === 'verified' ? 'bg-green-50 text-green-700 border-green-200' :
+                    clientProfile?.kyc_status === 'pending' ? 'bg-yellow-50 text-yellow-700 border-yellow-200' :
+                    'bg-red-50 text-red-700 border-red-200'
+                  }`}>
+                    KYC: {clientProfile?.kyc_status || 'not submitted'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Wallet Balance Widget */}
+              <div className="bg-slate-50 border border-slate-200/60 rounded-xl p-3.5 mb-4 text-xs">
+                <div className="flex items-center gap-1.5 text-slate-500 font-medium mb-2">
+                  <Wallet className="w-3.5 h-3.5 text-blue-600 animate-pulse" />
+                  <span>Available Wallet Balance</span>
+                </div>
+                <div className="space-y-1 font-mono">
+                  <div className="flex justify-between items-center text-slate-800">
+                    <span className="text-slate-400">NGN:</span>
+                    <span className="font-bold text-slate-900 text-sm">
+                      ₦{clientProfile?.wallet_balance_ngn?.toLocaleString(undefined, { minimumFractionDigits: 2 }) || '0.00'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center text-slate-800">
+                    <span className="text-slate-400">USD:</span>
+                    <span className="font-bold text-slate-900 text-sm">
+                      ${clientProfile?.wallet_balance_usd?.toLocaleString(undefined, { minimumFractionDigits: 2 }) || '0.00'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="mt-3">
+                  {clientProfile?.kyc_status === 'verified' ? (
+                    <button
+                      onClick={() => {
+                        setCreditError('');
+                        setCreditSuccess('');
+                        setIsCreditWalletModalOpen(true);
+                      }}
+                      className="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold py-1.5 px-3 rounded-lg shadow-xs transition flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Coins className="w-3.5 h-3.5" />
+                      Credit Wallet
+                    </button>
+                  ) : (
+                    <div className="text-center p-2 bg-yellow-50 text-yellow-800 border border-yellow-100 rounded-lg text-[10.5px]">
+                      <span className="font-semibold block mb-0.5">Wallet Locked 🔒</span>
+                      Complete and verify KYC to enable direct wallet crediting.
+                    </div>
+                  )}
+                </div>
               </div>
 
               <nav className="space-y-1">
@@ -906,6 +1128,27 @@ export default function ClientPortal({ currentDate, onStateChange }: ClientPorta
 
             {/* Portal Workspace */}
             <div className="lg:col-span-3 space-y-6">
+              {/* Approved Wallet Deposit Notification Banner */}
+              {walletTransactions.filter(t => t.status === 'approved' && !t.client_acknowledged).map(tx => (
+                <div key={tx.id} className="bg-emerald-50 border border-emerald-200 text-emerald-800 p-4 rounded-xl flex items-center justify-between gap-4 shadow-xs animate-fade-in">
+                  <div className="flex items-start gap-3">
+                    <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5 animate-bounce" />
+                    <div>
+                      <strong className="block text-emerald-900">Wallet Credited Successfully! 🎉</strong>
+                      <span className="text-xs text-emerald-700 block mt-0.5">
+                        Your bank transfer deposit of <strong>{tx.currency === 'USD' ? '$' : '₦'}{tx.amount.toLocaleString()}</strong> has been verified & approved. Your wallet has been successfully funded and you can now proceed to book investments automatically.
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleAcknowledgeTx(tx.id)}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs px-3 py-1.5 rounded-lg shrink-0 transition cursor-pointer"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              ))}
+
               {/* Active Tab View */}
               {activeTab === 'dashboard' && (
                 <div className="space-y-6 animate-fade-in">
@@ -2030,6 +2273,154 @@ export default function ClientPortal({ currentDate, onStateChange }: ClientPorta
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 4: Credit Wallet Funding Overlay */}
+      {isCreditWalletModalOpen && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-lg w-full overflow-hidden animate-fade-in">
+            <div className="p-4 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
+              <span className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
+                <Coins className="w-4 h-4 text-blue-600" />
+                Credit My Wallet Balance
+              </span>
+              <button
+                onClick={() => setIsCreditWalletModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 text-lg font-bold"
+              >
+                ×
+              </button>
+            </div>
+
+            <form onSubmit={handleCreditWalletSubmit} className="p-5 space-y-4">
+              {creditError && (
+                <div className="p-3 bg-red-50 text-red-800 text-xs rounded-lg border border-red-100">
+                  {creditError}
+                </div>
+              )}
+              {creditSuccess && (
+                <div className="p-3 bg-emerald-50 text-emerald-800 text-xs rounded-lg border border-emerald-100">
+                  {creditSuccess}
+                </div>
+              )}
+
+              {/* Company account details */}
+              <div className="bg-blue-50/50 rounded-xl p-4 border border-blue-100 space-y-2 text-xs">
+                <span className="font-bold text-blue-800 block text-[11px] uppercase tracking-wider">Company Payment Account Details</span>
+                <p className="text-slate-600 leading-relaxed">
+                  Make a direct bank transfer to the official account below, and upload the transaction receipt proof to fund your wallet automatically upon operation desk approval:
+                </p>
+                <div className="grid grid-cols-2 gap-2 pt-2 text-slate-800 font-medium">
+                  <div className="bg-white p-2 rounded border border-blue-50">
+                    <span className="text-[10px] text-slate-400 block font-normal">NGN Bank:</span>
+                    <strong>GTBank PLC</strong>
+                    <span className="block text-[10px] text-slate-500 font-mono">Acc: 0123456789</span>
+                  </div>
+                  <div className="bg-white p-2 rounded border border-blue-50">
+                    <span className="text-[10px] text-slate-400 block font-normal">USD Bank:</span>
+                    <strong>GTBank PLC</strong>
+                    <span className="block text-[10px] text-slate-500 font-mono">Acc: 9876543210</span>
+                  </div>
+                </div>
+                <div className="bg-white p-2.5 rounded border border-blue-50 text-[10.5px]">
+                  <span className="text-slate-400 block font-normal">Beneficiary Name:</span>
+                  <strong className="text-slate-800">Trustline Capital Group Limited</strong>
+                  <span className="block text-slate-400 mt-1">Payment Description reference:</span>
+                  <span className="font-mono text-blue-700 font-bold text-[10px]">WALLET FUNDING ({currentUser.first_name.toUpperCase()} {currentUser.last_name.toUpperCase()})</span>
+                </div>
+              </div>
+
+              {/* Form Inputs */}
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <label className="block text-slate-600 font-medium mb-1">Currency</label>
+                  <select
+                    value={creditCurrency}
+                    onChange={(e) => setCreditCurrency(e.target.value as 'NGN' | 'USD')}
+                    className="w-full bg-white border border-slate-200 rounded-lg p-2 font-semibold"
+                  >
+                    <option value="NGN">NGN (₦)</option>
+                    <option value="USD">USD ($)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-slate-600 font-medium mb-1">Amount Transferred</label>
+                  <input
+                    type="number"
+                    value={creditAmount}
+                    onChange={(e) => setCreditAmount(Number(e.target.value))}
+                    min={1}
+                    className="w-full bg-white border border-slate-200 rounded-lg p-2 font-mono font-bold"
+                    placeholder="Enter amount"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <label className="block text-slate-600 font-medium mb-1">Your Bank Name</label>
+                  <input
+                    type="text"
+                    value={creditBankName}
+                    onChange={(e) => setCreditBankName(e.target.value)}
+                    placeholder="e.g. Zenith Bank"
+                    className="w-full bg-white border border-slate-200 rounded-lg p-2"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-600 font-medium mb-1">Transaction Ref / ID (Optional)</label>
+                  <input
+                    type="text"
+                    value={creditRef}
+                    onChange={(e) => setCreditRef(e.target.value)}
+                    placeholder="Reference number"
+                    className="w-full bg-white border border-slate-200 rounded-lg p-2 font-mono"
+                  />
+                </div>
+              </div>
+
+              {/* Receipt File Upload */}
+              <div className="text-xs">
+                <label className="block text-slate-600 font-medium mb-1">Upload Payment Receipt Proof</label>
+                <div className="border-2 border-dashed border-slate-200 hover:border-blue-400 transition rounded-xl p-4 text-center cursor-pointer relative bg-slate-50/50">
+                  <input
+                    type="file"
+                    accept="image/*,application/pdf"
+                    onChange={handleReceiptUpload}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  />
+                  <div className="space-y-1">
+                    <Upload className="w-6 h-6 text-slate-400 mx-auto" />
+                    <p className="font-medium text-slate-700">
+                      {creditReceiptName ? (
+                        <span className="text-emerald-600 font-bold">{creditReceiptName}</span>
+                      ) : (
+                        "Click or drag and drop to upload payment receipt"
+                      )}
+                    </p>
+                    <p className="text-[10px] text-slate-400">PNG, JPG, JPEG or PDF (max 5MB)</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 text-xs font-semibold">
+                <button
+                  type="button"
+                  onClick={() => setIsCreditWalletModalOpen(false)}
+                  className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg shadow-xs transition cursor-pointer"
+                >
+                  Submit Payment Proof
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

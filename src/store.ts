@@ -15,7 +15,8 @@ import {
   PenaltyRule,
   ExchangeRate,
   SystemSetting,
-  CompanySetting
+  CompanySetting,
+  WalletTransaction
 } from './types';
 
 // Helper to generate UUIDs
@@ -124,6 +125,8 @@ const defaultClientProfiles: ClientProfile[] = [
     beneficiary_name: 'Mary Doe',
     beneficiary_relationship: 'Spouse',
     beneficiary_phone: '+234 803 555 9999',
+    wallet_balance_ngn: 2500000,
+    wallet_balance_usd: 10000,
     created_at: '2026-01-03T10:30:00Z',
     updated_at: '2026-01-03T11:00:00Z'
   },
@@ -148,6 +151,8 @@ const defaultClientProfiles: ClientProfile[] = [
     beneficiary_name: 'Samuel Smith',
     beneficiary_relationship: 'Sibling',
     beneficiary_phone: '+234 805 777 9999',
+    wallet_balance_ngn: 0,
+    wallet_balance_usd: 0,
     created_at: '2026-01-04T11:15:00Z',
     updated_at: '2026-01-04T11:15:00Z'
   }
@@ -469,7 +474,8 @@ export class TrustlineStore {
       exchangeRate: this.get<ExchangeRate>('exchangeRate', defaultExchangeRate),
       companySetting: this.get<CompanySetting>('companySetting', defaultCompanySetting),
       withdrawals: this.get<WithdrawalRequest[]>('withdrawals', defaultWithdrawals),
-      auditLogs: this.get<AuditLog[]>('auditLogs', defaultAuditLogs)
+      auditLogs: this.get<AuditLog[]>('auditLogs', defaultAuditLogs),
+      walletTransactions: this.get<WalletTransaction[]>('walletTransactions', [])
     };
   }
 
@@ -493,6 +499,7 @@ export class TrustlineStore {
     this.set('companySetting', defaultCompanySetting);
     this.set('withdrawals', defaultWithdrawals);
     this.set('auditLogs', defaultAuditLogs);
+    this.set('walletTransactions', []);
   }
 
   // Write simple audit log

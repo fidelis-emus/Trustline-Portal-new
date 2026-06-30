@@ -769,24 +769,7 @@ export default function SuperAdminPortal({ currentDate, onStateChange }: SuperAd
                 </button>
               </form>
 
-              {/* Quick Admin sign-in */}
-              <div className="mt-6 bg-slate-50 border border-slate-200 rounded-lg p-3">
-                <span className="text-[11px] font-bold text-slate-600 block mb-1.5 font-sans">Developer Access:</span>
-                <button
-                  onClick={() => {
-                    const db = TrustlineStore.loadState();
-                    const admin = db.users.find(u => u.email === 'admin@trustlinecapital.com');
-                    if (admin) handleLoginDirect(admin);
-                  }}
-                  className="w-full text-left text-xs bg-white hover:bg-blue-50 border border-slate-200 rounded px-2.5 py-1.5 flex justify-between items-center transition"
-                >
-                  <div>
-                    <strong className="block text-slate-800 text-[11px]">Fidelis Emus (Super Admin)</strong>
-                    <span className="text-[10px] text-slate-500 font-mono">admin@trustlinecapital.com / admin123</span>
-                  </div>
-                  <ChevronRight className="w-4 h-4 text-slate-400" />
-                </button>
-              </div>
+
             </div>
           </div>
         ) : (

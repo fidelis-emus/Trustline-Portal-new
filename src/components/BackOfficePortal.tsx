@@ -24,10 +24,11 @@ import {
   Layers,
   ChevronRight,
   LogOut,
-  FileText
+  FileText,
+  Eye
 } from 'lucide-react';
 import { TrustlineStore, generateUUID, generateInvestmentRef } from '../store';
-import { User, ClientProfile, Investment, InvestmentProduct, WithdrawalRequest, AuditLog, InvestmentCertificate } from '../types';
+import { User, ClientProfile, Investment, InvestmentProduct, WithdrawalRequest, AuditLog, InvestmentCertificate, WalletTransaction } from '../types';
 
 interface BackOfficePortalProps {
   currentDate: string;
@@ -49,6 +50,7 @@ export default function BackOfficePortal({ currentDate, onStateChange }: BackOff
   const [products, setProducts] = useState<InvestmentProduct[]>([]);
   const [withdrawals, setWithdrawals] = useState<WithdrawalRequest[]>([]);
   const [companySetting, setCompanySetting] = useState<any>(null);
+  const [walletTransactions, setWalletTransactions] = useState<WalletTransaction[]>([]);
   
   // UI Tabs
   const [activeTab, setActiveTab] = useState<'dashboard' | 'clients' | 'book' | 'requests' | 'permissions'>('dashboard');
@@ -60,6 +62,8 @@ export default function BackOfficePortal({ currentDate, onStateChange }: BackOff
   const [kycRemarks, setKycRemarks] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [requestsSubTab, setRequestsSubTab] = useState<'payouts' | 'deposits'>('payouts');
+  const [viewReceiptUrl, setViewReceiptUrl] = useState<string | null>(null);
 
   // Investment booking inputs (Backoffice side)
   const [bookClientId, setBookClientId] = useState('');
@@ -108,6 +112,7 @@ export default function BackOfficePortal({ currentDate, onStateChange }: BackOff
     setProducts(dbState.products.filter(p => p.is_active));
     setWithdrawals(dbState.withdrawals);
     setCompanySetting(dbState.companySetting);
+    setWalletTransactions(dbState.walletTransactions || []);
   };
 
   useEffect(() => {
@@ -431,6 +436,66 @@ export default function BackOfficePortal({ currentDate, onStateChange }: BackOff
     setTimeout(() => setSuccessMsg(''), 4000);
   };
 
+  // Process and approve wallet deposit proofs
+  const handleProcessDeposit = (tx: WalletTransaction, action: 'approve' | 'reject') => {
+    const dbState = TrustlineStore.loadState();
+    
+    // Update transaction status
+    const updatedTxs = (dbState.walletTransactions || []).map((t: WalletTransaction) => {
+      if (t.id === tx.id) {
+        return {
+          ...t,
+          status: action === 'approve' ? 'approved' as const : 'rejected' as const,
+          approved_at: new Date().toISOString()
+        };
+      }
+      return t;
+    });
+
+    // If approved, credit client's profile wallet balance
+    const updatedProfiles = dbState.clientProfiles.map(p => {
+      if (p.id === tx.client_id) {
+        if (tx.currency === 'USD') {
+          return {
+            ...p,
+            wallet_balance_usd: (p.wallet_balance_usd || 0) + tx.amount,
+            updated_at: new Date().toISOString()
+          };
+        } else {
+          return {
+            ...p,
+            wallet_balance_ngn: (p.wallet_balance_ngn || 0) + tx.amount,
+            updated_at: new Date().toISOString()
+          };
+        }
+      }
+      return p;
+    });
+
+    TrustlineStore.saveState({
+      ...dbState,
+      walletTransactions: updatedTxs,
+      clientProfiles: updatedProfiles
+    });
+
+    // Write audit log
+    TrustlineStore.addAuditLog(
+      currentUser!.id,
+      currentUser!.email,
+      'backoffice',
+      action === 'approve' ? 'APPROVE_WALLET_DEPOSIT' : 'REJECT_WALLET_DEPOSIT',
+      'wallet_transactions',
+      tx.id,
+      null,
+      { amount: tx.amount, currency: tx.currency }
+    );
+
+    setSuccessMsg(`Successfully ${action === 'approve' ? 'Approved & Credited' : 'Rejected'} Client Wallet Deposit!`);
+    reloadData();
+    onStateChange();
+    setTimeout(() => setSuccessMsg(''), 4000);
+  };
+
   // Searching clients
   const filteredClients = clients.filter(c => {
     const owner = users.find(u => u.id === c.user_id);
@@ -558,24 +623,7 @@ export default function BackOfficePortal({ currentDate, onStateChange }: BackOff
                 </button>
               </form>
 
-              {/* Quick Staff login */}
-              <div className="mt-6 bg-slate-50 border border-slate-200 rounded-lg p-3">
-                <span className="text-[11px] font-bold text-slate-600 block mb-1.5">Developer Login Pin:</span>
-                <button
-                  onClick={() => {
-                    const db = TrustlineStore.loadState();
-                    const staff = db.users.find(u => u.email === 'backoffice@trustlinecapital.com');
-                    if (staff) handleLoginDirect(staff);
-                  }}
-                  className="w-full text-left text-xs bg-white hover:bg-emerald-50 border border-slate-200 rounded px-2.5 py-1.5 flex justify-between items-center transition"
-                >
-                  <div>
-                    <strong className="block text-slate-800 text-[11px]">Sarah Okonkwo (Asset Operations)</strong>
-                    <span className="text-[10px] text-slate-500 font-mono">backoffice@trustlinecapital.com / backoffice123</span>
-                  </div>
-                  <ChevronRight className="w-4 h-4 text-slate-400" />
-                </button>
-              </div>
+
             </div>
           </div>
         ) : (
@@ -939,97 +987,207 @@ export default function BackOfficePortal({ currentDate, onStateChange }: BackOff
               {activeTab === 'requests' && (
                 <div className="space-y-6 animate-fade-in">
                   <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs">
-                    <h2 className="font-bold text-slate-900 text-base">Liquidation & Early Payout Audits Desk</h2>
-                    <p className="text-xs text-slate-500">Approve payout settlements. Systems automatically apply penalty schedules if liquidated before maturity dates.</p>
+                    <h2 className="font-bold text-slate-900 text-base">Client Requests & Settlements Operations Desk</h2>
+                    <p className="text-xs text-slate-500">Approve withdrawal liquidations and verify direct bank transfer deposit receipts to credit client wallets.</p>
+
+                    {/* Sub-tabs inside Requests */}
+                    <div className="flex gap-2 mt-4 border-b border-slate-100 pb-px text-xs font-semibold">
+                      <button
+                        onClick={() => setRequestsSubTab('payouts')}
+                        className={`pb-2 px-3 border-b-2 transition cursor-pointer ${
+                          requestsSubTab === 'payouts' ? 'border-blue-600 text-blue-700 font-bold' : 'border-transparent text-slate-500 hover:text-slate-700'
+                        }`}
+                      >
+                        Payouts & Liquidations ({withdrawals.filter(w => w.status === 'pending').length})
+                      </button>
+                      <button
+                        onClick={() => setRequestsSubTab('deposits')}
+                        className={`pb-2 px-3 border-b-2 transition cursor-pointer ${
+                          requestsSubTab === 'deposits' ? 'border-blue-600 text-blue-700 font-bold' : 'border-transparent text-slate-500 hover:text-slate-700'
+                        }`}
+                      >
+                        Wallet Funding Deposits ({(walletTransactions || []).filter(t => t.status === 'pending').length})
+                      </button>
+                    </div>
                   </div>
 
-                  {withdrawals.filter(w => w.status === 'pending').length === 0 ? (
-                    <div className="bg-white border border-slate-200 rounded-xl p-12 text-center text-slate-500">
-                      <FileCheck className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-                      <p className="font-semibold">No pending liquidation actions active.</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {withdrawals.filter(w => w.status === 'pending').map((req) => {
-                        const clProfile = clients.find(c => c.id === req.client_id);
-                        const clUser = users.find(u => u.id === clProfile?.user_id);
-                        const underlyingInv = investments.find(i => i.id === req.investment_id);
-                        const isEarly = new Date(currentDate) < new Date(underlyingInv?.maturity_date || '');
+                  {requestsSubTab === 'payouts' ? (
+                    withdrawals.filter(w => w.status === 'pending').length === 0 ? (
+                      <div className="bg-white border border-slate-200 rounded-xl p-12 text-center text-slate-500 shadow-xs">
+                        <FileCheck className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+                        <p className="font-semibold">No pending liquidation actions active.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {withdrawals.filter(w => w.status === 'pending').map((req) => {
+                          const clProfile = clients.find(c => c.id === req.client_id);
+                          const clUser = users.find(u => u.id === clProfile?.user_id);
+                          const underlyingInv = investments.find(i => i.id === req.investment_id);
+                          const isEarly = underlyingInv ? (new Date(currentDate) < new Date(underlyingInv.maturity_date)) : false;
 
-                        return (
-                          <div key={req.id} className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs flex flex-col justify-between gap-4">
-                            <div className="flex justify-between items-start flex-wrap gap-2 pb-2.5 border-b border-slate-100 text-xs">
-                              <div>
-                                <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400">Requesting client:</span>
-                                <h3 className="font-bold text-slate-900 text-sm mt-0.5">{clUser?.first_name} {clUser?.last_name}</h3>
-                                <span className="font-mono text-slate-500 text-[10px]">{clUser?.email}</span>
-                              </div>
-                              <div className="text-right">
-                                <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400">Request Type:</span>
-                                <span className="block font-semibold capitalize text-slate-700">{req.request_type.replace('_', ' ')}</span>
-                              </div>
-                            </div>
-
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs font-mono">
-                              <div>
-                                <span className="text-slate-400 text-[10px] block">Ref Holdings:</span>
-                                <span className="font-bold text-slate-800">{underlyingInv?.investment_reference}</span>
-                              </div>
-                              <div>
-                                <span className="text-slate-400 text-[10px] block">Payout Amount:</span>
-                                <span className="font-bold text-slate-800">
-                                  {underlyingInv?.currency === 'USD' ? '$' : '₦'}{req.amount.toLocaleString()}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-slate-400 text-[10px] block">Accrued Yields:</span>
-                                <span className="font-bold text-emerald-600">
-                                  +{underlyingInv?.currency === 'USD' ? '$' : '₦'}{req.interest_earned.toLocaleString()}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-slate-400 text-[10px] block">Early Penalty:</span>
-                                <span className="font-bold text-red-600">
-                                  -{underlyingInv?.currency === 'USD' ? '$' : '₦'}{req.penalty_amount.toLocaleString()}
-                                </span>
-                              </div>
-                            </div>
-
-                            {/* Destination Bank display */}
-                            <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 text-xs text-slate-700">
-                              <span className="font-bold block text-slate-900 mb-1">Destination Bank Payout Details:</span>
-                              Bank: <strong>{req.bank_name}</strong> • Account: <strong>{req.account_number}</strong> • Name: <strong>{req.account_name}</strong>
-                              {req.remarks && <p className="mt-1.5 text-slate-500 italic">"Client Remark: {req.remarks}"</p>}
-                            </div>
-
-                            {isEarly && (
-                              <div className="bg-amber-50 text-amber-800 border border-amber-200 rounded-lg p-3 text-xs flex gap-2">
-                                <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+                          return (
+                            <div key={req.id} className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs flex flex-col justify-between gap-4 relative overflow-hidden">
+                              <div className="absolute top-0 left-0 w-1.5 h-full bg-amber-500" />
+                              
+                              <div className="flex justify-between items-start flex-wrap gap-2 pb-2.5 border-b border-slate-100 text-xs">
                                 <div>
-                                  <strong className="block mb-0.5">Early Liquidation Active!</strong>
-                                  This investment matures on <strong>{underlyingInv?.maturity_date}</strong>. System calculated penalty ₦/USD {req.penalty_amount.toLocaleString()} applied automatically.
+                                  <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400">Requesting client:</span>
+                                  <h3 className="font-bold text-slate-900 text-sm mt-0.5">{clUser?.first_name} {clUser?.last_name}</h3>
+                                  <span className="font-mono text-slate-500 text-[10px]">{clUser?.email}</span>
+                                </div>
+                                <div className="text-right">
+                                  <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400">Request Type:</span>
+                                  <span className="block font-semibold capitalize text-slate-700">{req.request_type.replace('_', ' ')}</span>
                                 </div>
                               </div>
-                            )}
 
-                            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 text-xs">
-                              <button
-                                onClick={() => handleProcessRequest(req, 'reject')}
-                                className="bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 font-semibold px-3 py-1.5 rounded transition cursor-pointer"
-                              >
-                                Reject Request
-                              </button>
-                              <button
-                                onClick={() => handleProcessRequest(req, 'approve')}
-                                className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-4 py-1.5 rounded shadow-xs transition cursor-pointer"
-                              >
-                                Approve & Settle Funds
-                              </button>
+                              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs font-mono">
+                                <div>
+                                  <span className="text-slate-400 text-[10px] block">Ref Holdings:</span>
+                                  <span className="font-bold text-slate-800">{underlyingInv?.investment_reference}</span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-400 text-[10px] block">Payout Amount:</span>
+                                  <span className="font-bold text-slate-800">
+                                    {underlyingInv?.currency === 'USD' ? '$' : '₦'}{req.amount.toLocaleString()}
+                                  </span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-400 text-[10px] block">Accrued Yields:</span>
+                                  <span className="font-bold text-emerald-600">
+                                    +{underlyingInv?.currency === 'USD' ? '$' : '₦'}{req.interest_earned.toLocaleString()}
+                                  </span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-400 text-[10px] block">Early Penalty:</span>
+                                  <span className="font-bold text-red-600">
+                                    -{underlyingInv?.currency === 'USD' ? '$' : '₦'}{req.penalty_amount.toLocaleString()}
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Destination Bank display */}
+                              <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 text-xs text-slate-700">
+                                <span className="font-bold block text-slate-900 mb-1">Destination Bank Payout Details:</span>
+                                Bank: <strong>{req.bank_name}</strong> • Account: <strong>{req.account_number}</strong> • Name: <strong>{req.account_name}</strong>
+                                {req.remarks && <p className="mt-1.5 text-slate-500 italic">"Client Remark: {req.remarks}"</p>}
+                              </div>
+
+                              {isEarly && (
+                                <div className="bg-amber-50 text-amber-800 border border-amber-200 rounded-lg p-3 text-xs flex gap-2">
+                                  <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+                                  <div>
+                                    <strong className="block mb-0.5">Early Liquidation Active!</strong>
+                                    This investment matures on <strong>{underlyingInv?.maturity_date}</strong>. System calculated penalty ₦/USD {req.penalty_amount.toLocaleString()} applied automatically.
+                                  </div>
+                                </div>
+                              )}
+
+                              <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 text-xs">
+                                <button
+                                  onClick={() => handleProcessRequest(req, 'reject')}
+                                  className="bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 font-semibold px-3 py-1.5 rounded transition cursor-pointer"
+                                >
+                                  Reject Request
+                                </button>
+                                <button
+                                  onClick={() => handleProcessRequest(req, 'approve')}
+                                  className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-4 py-1.5 rounded shadow-xs transition cursor-pointer"
+                                >
+                                  Approve & Settle Funds
+                                </button>
+                              </div>
                             </div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                          );
+                        })}
+                      </div>
+                    )
+                  ) : (
+                    /* Wallet Funding Deposits Queue */
+                    (walletTransactions || []).filter(t => t.status === 'pending').length === 0 ? (
+                      <div className="bg-white border border-slate-200 rounded-xl p-12 text-center text-slate-500 shadow-xs">
+                        <FileText className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+                        <p className="font-semibold">No pending wallet funding requests found.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {(walletTransactions || []).filter(t => t.status === 'pending').map((tx) => {
+                          const clProfile = clients.find(c => c.id === tx.client_id);
+                          const clUser = users.find(u => u.id === clProfile?.user_id);
+
+                          return (
+                            <div key={tx.id} className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-4 relative overflow-hidden">
+                              <div className="absolute top-0 left-0 w-1.5 h-full bg-blue-500" />
+
+                              <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
+                                <div>
+                                  <span className="text-[10px] bg-blue-50 text-blue-700 font-bold uppercase tracking-wider px-2 py-0.5 rounded border border-blue-200 font-mono">
+                                    TXID: {tx.id.substring(0, 8).toUpperCase()}
+                                  </span>
+                                  <h3 className="font-bold text-slate-800 text-sm mt-1">
+                                    {clUser ? `${clUser.first_name} ${clUser.last_name}` : 'Unknown Client'}
+                                  </h3>
+                                  <span className="text-xs text-slate-500 font-mono block">{clUser?.email}</span>
+                                </div>
+                                <div className="text-right">
+                                  <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400 block">Proposed Deposit:</span>
+                                  <span className="font-mono font-bold text-slate-950 text-base">
+                                    {tx.currency === 'USD' ? '$' : '₦'}{tx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-xs">
+                                <div>
+                                  <span className="text-slate-400 text-[10px] block">Sender Bank Name:</span>
+                                  <strong className="text-slate-800">{tx.bank_name || 'Direct Transfer'}</strong>
+                                </div>
+                                <div>
+                                  <span className="text-slate-400 text-[10px] block">Transaction Reference/ID:</span>
+                                  <strong className="text-slate-800 font-mono">{tx.reference || 'N/A'}</strong>
+                                </div>
+                                <div>
+                                  <span className="text-slate-400 text-[10px] block">Submission Date:</span>
+                                  <span className="text-slate-600 font-mono">{new Date(tx.created_at).toLocaleString()}</span>
+                                </div>
+                              </div>
+
+                              <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-100 flex items-center justify-between gap-4 text-xs">
+                                <div className="flex items-center gap-2">
+                                  <FileText className="w-5 h-5 text-slate-400" />
+                                  <div>
+                                    <span className="font-bold text-slate-800 block">Uploaded Transaction Receipt Proof</span>
+                                    <span className="text-[10px] text-slate-400">Verify client direct transfer details prior to crediting wallet.</span>
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={() => setViewReceiptUrl(tx.receipt_url)}
+                                  className="bg-white hover:bg-slate-100 text-blue-700 border border-slate-200 font-bold px-3 py-1.5 rounded-lg shadow-2xs transition flex items-center gap-1.5 cursor-pointer"
+                                >
+                                  <Eye className="w-3.5 h-3.5" />
+                                  View Receipt File
+                                </button>
+                              </div>
+
+                              <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 text-xs">
+                                <button
+                                  onClick={() => handleProcessDeposit(tx, 'reject')}
+                                  className="bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 font-semibold px-3 py-1.5 rounded transition cursor-pointer"
+                                >
+                                  Reject Request
+                                </button>
+                                <button
+                                  onClick={() => handleProcessDeposit(tx, 'approve')}
+                                  className="bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-1.5 rounded shadow-xs transition cursor-pointer"
+                                >
+                                  Approve & Credit Wallet
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )
                   )}
                 </div>
               )}
@@ -1253,6 +1411,59 @@ export default function BackOfficePortal({ currentDate, onStateChange }: BackOff
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* RECEIPT LIGHTBOX MODAL */}
+      {viewReceiptUrl && (
+        <div className="fixed inset-0 bg-black/80 z-55 flex items-center justify-center p-4 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-2xl w-full overflow-hidden animate-fade-in">
+            <div className="p-4 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
+              <span className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
+                <FileText className="w-4 h-4 text-blue-600" />
+                Direct Transfer Receipt Proof Lightbox
+              </span>
+              <button
+                onClick={() => setViewReceiptUrl(null)}
+                className="text-slate-400 hover:text-slate-600 text-lg font-bold"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="p-6 bg-slate-900/5 flex items-center justify-center min-h-[300px] max-h-[600px] overflow-y-auto">
+              {viewReceiptUrl.startsWith('data:image/') || viewReceiptUrl.startsWith('http') ? (
+                <img
+                  src={viewReceiptUrl}
+                  alt="Payment Receipt"
+                  className="max-h-[500px] max-w-full rounded-lg object-contain shadow-md"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div className="text-center p-12 bg-white rounded-xl border border-slate-200 shadow-xs max-w-sm">
+                  <FileText className="w-12 h-12 text-blue-500 mx-auto mb-3" />
+                  <span className="font-bold text-slate-800 block text-sm">Receipt Document Attached</span>
+                  <p className="text-xs text-slate-500 mt-1">This document is formatted as a file transfer stream (PDF/Binary). Open it using client-side diagnostic services or approve directly.</p>
+                  <a
+                    href={viewReceiptUrl}
+                    download="payment-receipt"
+                    className="mt-4 inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs py-2 px-4 rounded-lg shadow-sm transition"
+                  >
+                    Download Original File
+                  </a>
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end">
+              <button
+                onClick={() => setViewReceiptUrl(null)}
+                className="bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs px-4 py-2 rounded-lg shadow-xs transition cursor-pointer"
+              >
+                Close View
+              </button>
+            </div>
           </div>
         </div>
       )}
